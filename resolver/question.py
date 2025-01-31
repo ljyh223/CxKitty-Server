@@ -38,6 +38,7 @@ from .searcher.restapi import (
     LemonSearcher,
 )
 from .searcher.sqlite import SqliteSearcher
+from .searcher.openai import OpenAISearcher
 
 # 所有的搜索器类
 SEARCHERS = {
@@ -51,6 +52,7 @@ SEARCHERS = {
     "MukeSearcher": MukeSearcher,
     "JsonApiSearcher": JsonApiSearcher,
     "LemonSearcher": LemonSearcher,
+    "OpenAISearcher": OpenAISearcher,
 }
 
 
