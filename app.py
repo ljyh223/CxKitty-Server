@@ -186,4 +186,4 @@ app.mount("/", app=StaticFiles(directory="web/static"), name="static")
 
 # 启动uvicorn服务，默认端口8000，main对应文件名
 if __name__ == '__main__':
-    uvicorn.run('app:app', port=2333)
+    uvicorn.run('app:app', host="0.0.0.0", port=2333,reload=True)
