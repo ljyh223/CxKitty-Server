@@ -462,7 +462,7 @@ class ChaoxingProcess:
             resolver.execute()
 
     def run(self):
-        dialog.logo(self.console)
+        # dialog.logo(self.console)
         acc_sessions = sessions_load()
         # 存在至少一个会话存档
         if acc_sessions:

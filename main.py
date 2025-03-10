@@ -328,7 +328,7 @@ def fuck_exam_worker(exam: ExamDto, export=False):
 
 
 if __name__ == "__main__":
-    dialog.logo(console)
+    # dialog.logo(console)
     acc_sessions = sessions_load()
     # 存在至少一个会话存档
     if acc_sessions:
