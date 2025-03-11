@@ -127,6 +127,9 @@ def login(process, tui_ctx: Console, api: ChaoXingAPI):
             # passwd = Prompt.ask("[yellow]请输入密码 (内容隐藏)", password=True, console=tui_ctx)
 
             tui_ctx.print('')
+            if passwd is None or passwd == "":
+                tui_ctx.print("[red]密码不能为空")
+                continue
             status, result = api.login_passwd(uname, passwd)
             if status:
 
