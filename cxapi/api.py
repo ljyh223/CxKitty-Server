@@ -89,6 +89,7 @@ class ChaoXingAPI:
                 "forbidotherlogin": 0,
                 "validate": "",
             },
+            allow_redirects=False
         )
         resp.raise_for_status()
         json_content = resp.json()
