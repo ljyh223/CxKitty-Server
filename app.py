@@ -2,19 +2,59 @@ import json
 import threading
 import time
 import uuid
-
+import sys
+from typing import Optional
+from qrcode import QRCode
 import uvicorn
+import mimetypes
+from threading import Thread
+import threading
+
+
 from starlette.responses import StreamingResponse, Response, HTMLResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
-
+from starlette.websockets import WebSocketState
 from web.chaoxingWorker import Multitasking
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from web.utils import chaoxing_web_prompt
+from cxapi.api import ChaoXingAPI
+from cxapi import (ChapterContainer)
+
+
+from main import (
+    on_captcha_after,
+    on_captcha_before,
+    on_face_detection_after,
+    on_face_detection_before,
+    fuck_task_worker
+)
+
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("image/png", ".png")
 
 app = FastAPI()
+api = ChaoXingAPI()
+user_sessions = {}
+
+# 用于保存任务线程的状态
+task_threads = {}
+
+from utils import (
+    SessionModule,
+    __version__,
+    ck2dict,
+    mask_name,
+    mask_phone,
+    save_session,
+    is_exist_session,
+    session_load
+)
+
+
 # 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
@@ -23,6 +63,13 @@ app.add_middleware(
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有头部
 )
+def get_api(phone: str):
+    print(phone)
+    if phone in user_sessions:
+        return user_sessions[phone]
+    api = ChaoXingAPI()
+    user_sessions[phone] = api
+    return api
 
 
 # 处理预检请求
@@ -46,42 +93,11 @@ def create_process():
     return process_id
 
 
-def comm_stream_generator(process_id):
-    """
-    通信流生成器
-    Args:
-        process_id:
-
-    Returns:
-
-    """
-    while True:
-        try:
-            output_new = multitasking.get_process(process_id).console.get_update_output()
-
-            update = False  # 是否有更新
-            if output_new != "":
-                update = True
-
-            data = str(json.dumps({"update": update, "output": output_new}))
-            yield f"data: {data}\n\n"  # 将数据序列化为JSON，然后编码为字节流
-            time.sleep(2)
-        except (ConnectionResetError, BrokenPipeError):
-            # 客户端断开连接，停止生成事件
-            print("Client disconnected")
 
 
 # 获取工作线程的ID
 @app.get("/get_process_id")
 def get_process_id(phone: str):
-    """
-    获取工作线程的ID
-    Args:
-        phone:
-
-    Returns:
-
-    """
     process_id = multitasking.get_process_id(phone)
     if process_id is None:
         print("没找到这个手机号的进程ID", phone)
@@ -93,96 +109,174 @@ def get_process_id(phone: str):
 
     return {"status": "success", "process_id": process_id}
 
+@app.get("/check_phone")
+def check_phone(phone: str, api: ChaoXingAPI = Depends(get_api)):
+    if not is_exist_session(phone):
+        return {"code":2,"status": "error", "msg": "手机号未登录"}
+    else:
+        session=session_load(phone)
+        api.session.ck_clear()
+        phone = session.phone
+        passwd = session.passwd
+        if passwd is not None:
+            status, result = api.login_passwd(phone, passwd)
+            if status:
+                api.accinfo()
+                save_session(api.session.ck_dump(), api.acc, passwd)
+                return {"code":200,"status": "success", "msg": "手机号已登录","account":{"puid":api.acc.puid,"name":api.acc.name,"sex":api.acc.sex.name,"phone":api.acc.phone,"school":api.acc.school,"stu_id":api.acc.stu_id}}
+            else:
+                return {"code":1,"status": "error", "msg": "手机号登录失败"}
+        else:
+            return {"code":2,"status": "error", "msg": "已无法登录"}
 
-# 获取工作线程的历史输出
-@app.get("/get_process_output")
-def get_process_output(process_id: str):
+
+@app.get("/login")
+def login(phone: str, passwd: str, api: ChaoXingAPI = Depends(get_api)):
+    status= api.login_passwd(phone, passwd)
+
+    if status:
+
+        # process.phone = uname  # 更新进程的手机号
+
+        # tui_ctx.print("[green]登录成功")
+        # tui_ctx.print(result)
+        api.accinfo()
+        save_session(api.session.ck_dump(), api.acc, passwd)
+        return {"code": 200, "status": "success", "msg": "登录成功", "account": api.acc}
+    else:
+        return {"code": 1, "status": "error", "msg": "登录失败"}
+
+
+@app.get("/qr_code")
+def qr_code(phone:str, api: ChaoXingAPI = Depends(get_api)):
     """
-    获取进程的输出
-    Args:
-        process_id: 目标进程的ID
-
-    Returns:
-
+    获取二维码数据
     """
-    output = multitasking.get_process(process_id).console.get_output()
-    return {"status": "success", "output": output}
+    api.qr_get()
+    return {"code": 200, "status": "success", "qr_data": api.qr_geturl()}
 
-
-# 连接通信流
-@app.get("/comm_stream")
-def comm_stream(process_id: str):
+@app.get("/qr_status")
+def check_status(phone:str, api: ChaoXingAPI = Depends(get_api)):
     """
-    连接通信流
-    Args:
-        process_id:
-
-    Returns:
-
+    检查二维码状态
     """
-    return StreamingResponse(comm_stream_generator(process_id), media_type="text/event-stream")
+
+    qr_status = api.login_qr()
+    print(qr_status)
+
+    if qr_status.get("status") is True:
+        api.accinfo()
+        # 模拟保存会话
+        save_session(api.session.ck_dump(), api.acc)
+        account_info = api.acc
+        return {
+            "code": 200,
+            "status": "success",
+            "msg": "登录成功",
+            "account": account_info
+        }
+
+    match qr_status.get("type"):
+        case "1":
+            return {"code": 1, "status": "error", "msg": "二维码验证错误"}
+        case "2":
+            return {"code": 2, "status": "error", "msg": "二维码已失效"}
+        case "4":
+            return {"code": 4, "status": "error", "msg": "二维码已扫描", "account": {"name": qr_status["nickname"], "puid": qr_status["uid"]}}
+        case "3":
+            return {"code": 3, "status": "error", "msg": "未登录"}
 
 
-# 更新进程的最后刷新的时间
-@app.get("/update_process_refresh_time")
-def update_process_refresh_time(process_id: str):
-    """
-    更新进程的最后刷新的时间
-    Args:
-        process_id: 目标进程的ID
-        refresh_time: 刷新时间
-
-    Returns:
-
-    """
-    process = multitasking.get_process(process_id)
-    if process is None:
-        return {"status": "error", "message": "No process found with id {}".format(process_id)}
-    process.last_refresh_time = time.time()
-    return {"status": "success"}
+@app.get('/get_class')
+def get_class(phone: str, api: ChaoXingAPI = Depends(get_api)):
+    classContainer = api.fetch_classes()
+    return {
+        "code":200,
+        "status": "success",
+        "classes": classContainer.classes
+    }
 
 
-@app.get("/send_value")
-def send_value(process_id: str, value: str):
-    """
-    发送值
-    Args:
-        process_id:
-        value:
 
-    Returns:
+@app.get("/task_work")
+def task_work(phone: str,classes_id:str, api: ChaoXingAPI = Depends(get_api)):
 
-    """
-    # 如果进程ID在输入队列中, 则更新值
-    if process_id in list(chaoxing_web_prompt.input_queue.keys()):
-        chaoxing_web_prompt.input_queue[process_id] = value
-    print("得到输入", process_id, value)
-    return {"status": "success"}
-
-
-# 接口正常访问测试
-@app.get("/test")
-def test():
-    return {"status": "success"}
+    ids = classes_id.split(",")
+    # 检查是否已有任务在运行
+    if phone in task_threads and task_threads[phone].is_alive():
+        print("已有任务在运行")
+        classContainer = api.fetch_classes()
+        progress=[]
+        for i, v in enumerate(classContainer.classes):
+            if str(v.class_id) in ids:
+                chapters=classContainer.get_chapters_by_index(i)
+                progress.append({
+                                "name": v.name,
+                                "class_id": v.class_id,
+                                "point_total": chapters.point_total,
+                                "point_finished":v.point_finished
+                })
+        return {"code": 1, "status": "error", "msg": "任务正在运行，请稍后再试","progress":progress}
 
 
-@app.get("/test2")
-def test2():
-    namelist = []
-    for thread in threading.enumerate():
-        namelist.append(thread.name)
-        print(thread.name)
-    return {"status": "success", "namelist": namelist}
+    
+    # 定义任务函数
+    def run_task():
+        session = api.session
+        api.session.reg_captcha_after(on_captcha_after)
+        api.session.reg_captcha_before(on_captcha_before)
+        api.session.reg_face_after(on_face_detection_after)
+        api.session.reg_face_before(on_face_detection_before)
+        classContainer = api.fetch_classes()
+        for i, v in enumerate(classContainer.classes):
+            # 主要是这个函数，是用来刷课的
+            if str(v.class_id) in ids:
+                print(f"开始刷课 ==> name: {v.name} id: {v.class_id}")
+                fuck_task_worker(
+                    ChapterContainer(
+                        session=session,
+                        acc=api.acc,
+                        courseid=v.course_id,
+                        name=v.name,
+                        classid=v.class_id,
+                        cpi=v.cpi,
+                        chapters=classContainer.get_chapters_by_index(i)
+                    )
+                )
+        # 任务完成后移除线程记录
+        del task_threads[phone]
 
+    # 创建并启动线程
+    task_thread = Thread(target=run_task)
+    task_thread.start()
 
+    # 启动任务过后，写入日志文件中
+    with open("log.txt", "a") as f:
+        f.write(f"任务开始: {phone}\n")
+        f.write(f"任务课程id:  {classes_id}\n")
+    # 保存线程状态
+    task_threads[phone] = task_thread
+
+    return {"code": 200, "status": "success", "msg": "任务已启动"}
+
+        
 @app.get("/")
 @app.get("/index")
-def read_root():
-    return RedirectResponse(url="/index.html")
+async def read_root():
+    return RedirectResponse(url="/static/index.html")
 
 
 # 静态文件
-app.mount("/", app=StaticFiles(directory="web/static"), name="static")
+app.mount("/static", StaticFiles(directory="web/static"), name="static")
+
+# 提供 SPA 回退支持
+@app.get("/static/{path:path}")
+async def serve_spa(path: str):
+    # 如果请求的文件不存在，返回 index.html
+    try:
+        return FileResponse(f"web/static/{path}")
+    except FileNotFoundError:
+        return FileResponse("web/static/index.html")
 
 # 启动uvicorn服务，默认端口8000，main对应文件名
 if __name__ == '__main__':

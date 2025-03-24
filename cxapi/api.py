@@ -91,6 +91,7 @@ class ChaoXingAPI:
             },
             allow_redirects=False
         )
+        print(resp.text)
         resp.raise_for_status()
         json_content = resp.json()
 

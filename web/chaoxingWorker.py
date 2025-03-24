@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import re
+import asyncio
 from collections import deque
 from enum import Enum
 from os import PathLike
@@ -40,84 +41,59 @@ from web.utils import ChaoxingProcessState, check_timeout
 
 
 class ChaoxingWebConsole(Console):
-    last_output = ""  # 记录上次的输出，用于判断是否有更新
-
     def __init__(self, process, web_mode=False, height: int = 30):
         self.process = process
         self.mode = web_mode
-
+        self.last_output = ""
         super().__init__(height=height, record=True)
-        self.output_collector = deque(maxlen=50)
+        self.output_collector = []
+        
+        # 为每个控制台实例创建一个事件循环
+        
+        self._loop = None
+        try:
+            self._loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
 
     def print(self, *args, **kwargs):
-        # 如果是web模式，记录输出
-        if self.mode:
-            # 捕获输出不在控制台打印
-            with self.capture() as capture:
-                super().print(*args, **kwargs)
-            self.collect_output()  # 记录输出
-        else:
-            super().print(*args, **kwargs)
+        if self.mode and hasattr(self.process, 'ws_io'):
+            output = " ".join(str(arg) for arg in args)
+            if kwargs.get('end') is not None:
+                output += kwargs['end']
+            else:
+                output += '\n'
+                
+            # 使用实例的事件循环
+            future = asyncio.run_coroutine_threadsafe(
+                self.process.ws_io.write(output), 
+                self._loop
+            )
+            future.result()  # 等待发送完成
+            
+        super().print(*args, **kwargs)
 
-    @staticmethod
-    def parse_css(css):
-        css_dict = {}
-        for line in css.split('\n'):
-            if '{' in line and '}' in line:
-                selector, styles = line.split('{')
-                selector = selector.strip()
-                styles = styles.split('}')[0].strip()
-                style_dict = {}
-                for style in styles.split(';'):
-                    if ':' in style:
-                        property, value = style.split(':')
-                        style_dict[property.strip()] = value.strip()
-                css_dict[selector] = style_dict
+    def input(self, prompt: str = "") -> str:
+        if self.mode and hasattr(self.process, 'ws_io'):
+            self.print(prompt, end="")
+            # 使用实例的事件循环
+            future = asyncio.run_coroutine_threadsafe(
+                self.process.ws_io.readline(), 
+                self._loop
+            )
+            return future.result().strip()
+        return super().input(prompt)
 
-        return css_dict
-
-    @staticmethod
-    def styles_to_string(styles):
-        return '; '.join(f'{k}: {v}' for k, v in styles.items())
-
+    # 删除不需要的方法
     def collect_output(self):
-        html = self.export_html()
-
-        # print(html)
-
-        soup = BeautifulSoup(html, 'html.parser')
-
-        styleMatch = re.search(r'<style>(.*?)</style>', html, re.DOTALL)
-
-        if styleMatch:
-            style_dict = self.parse_css(styleMatch.group(1))
-            for selector, styles in style_dict.items():
-                for item in soup.select(selector):
-                    if 'style' in item.attrs:
-                        item.attrs['style'] += self.styles_to_string(styles)
-                    else:
-                        item.attrs['style'] = self.styles_to_string(styles)
-
-        # bodyMatch = re.search(r'<body>(.*?)</body>', html, re.DOTALL)
-        self.output_collector.append(str(soup.body.pre.code))
+        pass
 
     def get_output(self):
-        if not self.mode:  # 如果不是web模式，直接返回
-            return
-
-        return "".join(self.output_collector)
+        pass
 
     def get_update_output(self):
-        if not self.mode:  # 如果不是web模式，直接返回
-            return
-
-        output = self.get_output()
-        # 计算更新的部分
-        if self.last_output == output:
-            output = ""
-        self.last_output = output
-
-        return output
+        pass
 
 
 class ChaoxingProcess:
@@ -539,6 +515,11 @@ class ChaoxingProcess:
         """
         sys.exit()
 
+    def set_io(self, ws_io):
+        self.ws_io = ws_io
+        sys.stdout = ws_io
+        sys.stdin = ws_io
+
 
 class GarbageCollector(threading.Thread):
     def __init__(self, multitasking, check_interval=5):
@@ -561,19 +542,29 @@ class GarbageCollector(threading.Thread):
 class Multitasking:
     def __init__(self):
         self.tasks = []
-
-        # 启动垃圾回收线程
         self.gc = GarbageCollector(self)
         self.gc.start()
 
     @staticmethod
     def threading_fun(process):
-        process.run()
+        # 为新线程创建事件循环
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            process.run()
+        finally:
+            loop.close()
 
     def create_process(self, process_id):
         process = ChaoxingProcess(process_id=process_id, web_mode=True)
         self.tasks.append(process)
-        thread = threading.Thread(target=self.threading_fun, args=(process,), name='Thread-' + process_id)
+        thread = threading.Thread(
+            target=self.threading_fun, 
+            args=(process,), 
+            name='Thread-' + process_id
+        )
         thread.start()
 
     def get_process(self, process_id):

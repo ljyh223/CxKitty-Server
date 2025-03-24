@@ -3,6 +3,8 @@ import json
 import sys
 import time
 from os import PathLike
+import logging
+from typing import Optional
 
 from rich.align import Align
 from rich.console import Console
@@ -28,7 +30,7 @@ from logger import Logger
 from resolver import DocumetResolver, MediaPlayResolver, QuestionResolver
 from utils import __version__, ck2dict, sessions_load
 
-api = ChaoXingAPI()
+
 console = Console(height=config.TUI_MAX_HEIGHT)
 logger = Logger("Main")
 
@@ -40,6 +42,10 @@ lay_right = Layout(name="Right", size=60)
 lay_right_content = Layout(name="RightContent")
 lay_session_notice = Layout(name="session_notice", size=6)
 lay_right.update(lay_right_content)
+
+# 配置日志记录
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def task_wait(tui_ctx: Layout, wait_sec: int, text: str):
@@ -119,150 +125,91 @@ def on_face_detection_before(object_id: str, image_path: PathLike):
     lay_right.unsplit()
 
 
-def fuck_task_worker(chap: ChapterContainer):
+def fuck_task_worker(chap: ChapterContainer, logger: Optional[logging.Logger] = None):
     """章节任务点处理实现
     Args:
         chap: 章节容器对象
+        logger: 可选的日志记录器，默认为 None
     """
+    if logger is None:
+        logger = logging.getLogger(__name__)
 
-    def _show_chapter(index: int):
-        chap.set_tui_index(index)
-        lay_right_content.update(
-            Panel(
-                chap,
-                title=f"《{chap.name}》章节列表",
-                border_style="blue",
-            )
-        )
-
-    layout.split_row(lay_left, lay_right)
-    lay_left.update(
-        Panel(
-            Align.center(
-                "[yellow]正在扫描章节，请稍等...",
-                vertical="middle",
-            )
-        )
-    )
+    logger.info(f"开始处理章节任务: {chap.name}")
 
     chap.fetch_point_status()
-    with Live(layout, console=console) as live:
-        # 遍历章节列表
-        for index in range(len(chap)):
-            _show_chapter(index)
-            if chap.is_finished(index) and config.WORK["export"] is False:  # 如果该章节所有任务点做完, 那么就跳过
-                logger.info(
-                    f"忽略完成任务点 "
-                    f"[{chap.chapters[index].label}:{chap.chapters[index].name}(Id.{chap.chapters[index].chapter_id})]"
-                )
-                time.sleep(0.1)  # 解决强迫症, 故意添加延时, 为展示滚屏效果
-                continue
+
+    # 遍历章节列表
+    for index in range(len(chap)):
+        logger.info(f"正在处理章节 {index + 1}/{len(chap)}: {chap.chapters[index].name}")
+
+        if chap.is_finished(index) and not config.WORK["export"]:
+            logger.info(f"章节已完成，跳过: {chap.chapters[index].name}")
+            continue
+
+        refresh_flag = True
+
+        # 遍历章节中的任务点
+        for task_point in chap[index]:
+            try:
+                task_point.fetch_attachment()
+            except ChapterNotOpened:
+                if refresh_flag:
+                    chap.refresh_chapter(index - 1)
+                    refresh_flag = False
+                    continue
+                else:
+                    logger.error(f"章节未开放: {chap.chapters[index].name}")
+                    return
+
             refresh_flag = True
-            # 获取当前章节的所有任务点, 并遍历
-            for task_point in chap[index]:
-                # 拉取任务卡片 Attachment
-                try:
-                    task_point.fetch_attachment()
-                except ChapterNotOpened:
-                    if refresh_flag:
-                        chap.refresh_chapter(index-1)
-                        refresh_flag = False
+
+            try:
+                # 根据任务点类型处理
+                if isinstance(task_point, PointWorkDto) and (config.WORK_EN or config.WORK["export"]):
+                    if config.WORK["export"]:
+                        task_point.parse_attachment()
+                        task_point.export(config.EXPORT_PATH / f"work_{task_point.work_id}.json")
+                        logger.info(f"导出作业: {task_point.title}")
+
+                    if config.WORK_EN:
+                        if not task_point.parse_attachment():
+                            continue
+                        task_point.fetch_all()
+                        resolver = QuestionResolver(
+                            exam_dto=task_point,
+                            fallback_save=config.WORK["fallback_save"],
+                            fallback_fuzzer=config.WORK["fallback_fuzzer"],
+                        )
+                        resolver.execute()
+                        logger.info(f"完成章节测验: {task_point.title}")
+
+                elif isinstance(task_point, PointVideoDto) and config.VIDEO_EN:
+                    if not task_point.parse_attachment():
                         continue
-                    else:
-                        lay_left.unsplit()
-                        lay_left.update(
-                            Panel(
-                                Align.center(
-                                    f"[red]章节【{chap.chapters[index].label}】《{chap.chapters[index].name}》未开放\n程序无法继续执行！",
-                                    vertical="middle",
-                                ),
-                                border_style="red",
-                            )
-                        )
-                        logger.error("\n-----*未开放章节, 程序异常退出*-----")
-                        sys.exit()
-                refresh_flag = True
-                try:
-                    # 开始分类讨论任务点类型
-                    # 章节测验类型
-                    if isinstance(task_point, PointWorkDto) and (
-                        config.WORK_EN or config.WORK["export"] is True
-                    ):
-                        # 导出作业试题
-                        if config.WORK["export"] is True:
-                            task_point.parse_attachment()
-                            # 保存 json 文件
-                            task_point.export(
-                                config.EXPORT_PATH / f"work_{task_point.work_id}.json"
-                            )
+                    if not task_point.fetch():
+                        continue
+                    resolver = MediaPlayResolver(
+                        media_dto=task_point,
+                        speed=config.VIDEO["speed"],
+                        report_rate=config.VIDEO["report_rate"],
+                    )
+                    resolver.execute()
+                    logger.info(f"完成视频任务: {task_point.title}")
 
-                        # 完成章节测验
-                        if config.WORK_EN:
-                            if not task_point.parse_attachment():
-                                continue
-                            task_point.fetch_all()
-                            # 实例化解决器
-                            resolver = QuestionResolver(
-                                exam_dto=task_point,
-                                fallback_save=config.WORK["fallback_save"],
-                                fallback_fuzzer=config.WORK["fallback_fuzzer"],
-                            )
-                            # 传递 TUI ctx
-                            lay_left.update(resolver)
-                            # 开始执行自动接管
-                            resolver.execute()
-                            # 开始等待
-                            task_wait(lay_left, config.WORK_WAIT, f"试题《{task_point.title}》已结束")
+                elif isinstance(task_point, PointDocumentDto) and config.DOCUMENT_EN:
+                    if not task_point.parse_attachment():
+                        continue
+                    resolver = DocumetResolver(document_dto=task_point)
+                    resolver.execute()
+                    logger.info(f"完成文档任务: {task_point.title}")
 
-                    # 视频类型
-                    elif isinstance(task_point, PointVideoDto) and config.VIDEO_EN:
-                        if not task_point.parse_attachment():
-                            continue
-                        # 拉取取任务点数据
-                        if not task_point.fetch():
-                            continue
-                        # 实例化解决器
-                        resolver = MediaPlayResolver(
-                            media_dto=task_point,
-                            speed=config.VIDEO["speed"],
-                            report_rate=config.VIDEO["report_rate"],
-                        )
-                        # 传递 TUI ctx
-                        lay_left.update(resolver)
-                        # 开始执行自动接管
-                        resolver.execute()
-                        # 开始等待
-                        task_wait(lay_left, config.VIDEO_WAIT, f"视频《{task_point.title}》已结束")
+            except (TaskPointError, NotImplementedError) as e:
+                logger.error(f"任务点处理异常: {e}")
 
-                    # 文档类型
-                    elif isinstance(task_point, PointDocumentDto) and config.DOCUMENT_EN:
-                        if not task_point.parse_attachment():
-                            continue
-                        # 实例化解决器
-                        resolver = DocumetResolver(document_dto=task_point)
-                        # 传递 TUI ctx
-                        lay_left.update(resolver)
-                        # 开始执行自动接管
-                        resolver.execute()
+        # 刷新章节任务点状态
+        chap.fetch_point_status()
 
-                        # 开始等待
-                        task_wait(lay_left, config.DOCUMENT_WAIT, f"文档《{task_point.title}》已结束")
-
-                except (TaskPointError, NotImplementedError) as e:
-                    logger.error(f"任务点自动接管执行异常 -> {e.__class__.__name__} {e.__str__()}")
-
-                # 刷新章节任务点状态
-                chap.fetch_point_status()
-                _show_chapter(index)
-
-        lay_left.unsplit()
-        lay_left.update(
-            Panel(
-                Align.center("[green]该课程已通过", vertical="middle"),
-                border_style="green",
-            )
-        )
-        time.sleep(5.0)
+    logger.info(f"章节任务完成: {chap.name}")
 
 
 def fuck_exam_worker(exam: ExamDto, export=False):

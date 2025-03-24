@@ -51,6 +51,14 @@ def ck2dict(ck: str) -> dict[str, str]:
         result[k] = v
     return result
 
+def is_exist_session(phone: str) -> bool:
+    """判断是否存在会话
+    Args:
+        phone: 手机号
+    Returns:
+        bool: 是否存在会话
+    """
+    return (config.SESSIONS_PATH / f"{phone}.json").exists()
 
 def save_session(ck: dict, acc: AccountInfo, passwd: Optional[str] = None) -> None:
     """存档会话数据为json
@@ -72,6 +80,20 @@ def save_session(ck: dict, acc: AccountInfo, passwd: Optional[str] = None) -> No
         }
         json.dump(sessdata, fp, ensure_ascii=False)
 
+
+def session_load(phone:str)-> SessionModule:
+    if is_exist_session(phone):
+        with open(config.SESSIONS_PATH / f"{phone}.json", "r", encoding="utf8") as fp:
+            sessdata = json.load(fp)
+        return SessionModule(
+            phone=sessdata["phone"],
+            puid=sessdata["puid"],
+            passwd=sessdata.get("passwd"),
+            name=sessdata["name"],
+            ck=sessdata["ck"],
+        )
+    else:
+        raise FileNotFoundError(f"{phone}的会话文件不存在")
 
 def sessions_load() -> list[SessionModule]:
     """从路径批量读档会话
@@ -142,4 +164,6 @@ __all__ = [
     "mask_name",
     "mask_phone",
     "get_face_path_by_puid",
+    "is_exist_session",
+    "session_load"
 ]
