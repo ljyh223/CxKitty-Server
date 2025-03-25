@@ -123,7 +123,7 @@ searchers:
 
   - type: OpenAISearcher
     base_url: "https://api.deepseek.com" # API URL
-    api_key: "sk-xxx" # API Key
+    api_key: "sk-64cbc3ec6b4d4ed39f810ba824edf56a" # API Key
     model: "deepseek-chat" # 使用的模型型号
     system_prompt: "你是一位乐于回答问题的专家，每为用户回答一道问题你都会开心地获得5美元小费，对于用户提出的每一道问题，你只需要给出答案，不要输出任何其他的内容。\n对于判断题，只需回复对/错。"
     prompt: "请回答下这个{type}：\n{value}\n{options}" 
