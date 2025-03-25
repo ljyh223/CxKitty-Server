@@ -241,25 +241,36 @@ def task_work(phone: str,course_ids:str, api: ChaoXingAPI = Depends(get_api)):
         api.session.reg_face_after(on_face_detection_after)
         api.session.reg_face_before(on_face_detection_before)
         
-        classContainer = api.fetch_classes()
-        for i, v in enumerate(classContainer.classes):
-            # 主要是这个函数，是用来刷课的
-            print(v.course_id)
-            if str(v.course_id) in ids:
-                print(f"开始刷课 ==> name: {v.name} id: {v.class_id}")
-                fuck_task_worker(
-                    ChapterContainer(
-                        session=session,
-                        acc=api.acc,
-                        courseid=v.course_id,
-                        name=v.name,
-                        classid=v.class_id,
-                        cpi=v.cpi,
-                        chapters=classContainer.get_chapters_by_index(i)
-                    )
-                )
+        # 开始任务
+        for chap in chaps:
+            fuck_task_worker(chap)
         # 任务完成后移除线程记录
         del task_threads[phone]
+
+
+    classContainer = api.fetch_classes()
+    chaps=[]
+    coures=[]
+    for i, v in enumerate(classContainer.classes):
+        # 主要是这个函数，是用来刷课的
+        print(v.course_id)
+        if str(v.course_id) in ids:
+            print(f"开始刷课 ==> name: {v.name} id: {v.class_id}")
+            chap=ChapterContainer(
+                session=session,
+                acc=api.acc,
+                courseid=v.course_id,
+                name=v.name,
+                classid=v.class_id,
+                cpi=v.cpi,
+                chapters=classContainer.get_chapters_by_index(i)
+            )
+            chaps.append(chap)
+            coures.append({
+                "name": v.name,
+                "class_id": v.class_id,
+                "progress": chap.fetch_point_status()
+            })
 
     # 创建并启动线程
     task_thread = Thread(target=run_task)
@@ -272,7 +283,7 @@ def task_work(phone: str,course_ids:str, api: ChaoXingAPI = Depends(get_api)):
     # 保存线程状态
     task_threads[phone] = task_thread
 
-    return {"code": 200, "status": "success", "msg": "任务已启动"}
+    return {"code": 200, "status": "success", "msg": "任务已启动","progress":coures}
 
         
 @app.get("/")
