@@ -199,38 +199,53 @@ def get_class(phone: str, api: ChaoXingAPI = Depends(get_api)):
 
 
 @app.get("/task_work")
-def task_work(phone: str,classes_id:str, api: ChaoXingAPI = Depends(get_api)):
+def task_work(phone: str,course_ids:str, api: ChaoXingAPI = Depends(get_api)):
 
-    ids = classes_id.split(",")
+    ids = course_ids.split(",")
+    session = api.session
+    print(ids)
     # 检查是否已有任务在运行
     if phone in task_threads and task_threads[phone].is_alive():
         print("已有任务在运行")
         classContainer = api.fetch_classes()
-        progress=[]
+        coures=[]
         for i, v in enumerate(classContainer.classes):
-            if str(v.class_id) in ids:
-                chapters=classContainer.get_chapters_by_index(i)
-                progress.append({
+            if str(v.course_id) in ids:
+    
+                # chapters=classContainer.get_chapters_by_index(i)
+                chap=ChapterContainer(
+                        session=session,
+                        acc=api.acc,
+                        courseid=v.course_id,
+                        name=v.name,
+                        classid=v.class_id,
+                        cpi=v.cpi,
+                        chapters=classContainer.get_chapters_by_index(i)
+                    )
+                progress=chap.fetch_point_status()
+                coures.append({
                                 "name": v.name,
                                 "class_id": v.class_id,
-                                "point_total": chapters.point_total,
-                                "point_finished":v.point_finished
+                                "progress": progress
                 })
-        return {"code": 1, "status": "error", "msg": "任务正在运行，请稍后再试","progress":progress}
+        return {"code": 1, "status": "error", "msg": "任务正在运行，请稍后再试","progress":coures}
 
 
     
     # 定义任务函数
     def run_task():
-        session = api.session
+        
+        # 注册回调函数
         api.session.reg_captcha_after(on_captcha_after)
         api.session.reg_captcha_before(on_captcha_before)
         api.session.reg_face_after(on_face_detection_after)
         api.session.reg_face_before(on_face_detection_before)
+        
         classContainer = api.fetch_classes()
         for i, v in enumerate(classContainer.classes):
             # 主要是这个函数，是用来刷课的
-            if str(v.class_id) in ids:
+            print(v.course_id)
+            if str(v.course_id) in ids:
                 print(f"开始刷课 ==> name: {v.name} id: {v.class_id}")
                 fuck_task_worker(
                     ChapterContainer(
@@ -251,9 +266,9 @@ def task_work(phone: str,classes_id:str, api: ChaoXingAPI = Depends(get_api)):
     task_thread.start()
 
     # 启动任务过后，写入日志文件中
-    with open("log.txt", "a") as f:
+    with open("log.txt", "a",encoding='utf8') as f:
         f.write(f"任务开始: {phone}\n")
-        f.write(f"任务课程id:  {classes_id}\n")
+        f.write(f"任务课程id:  {course_ids}\n")
     # 保存线程状态
     task_threads[phone] = task_thread
 

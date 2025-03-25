@@ -132,8 +132,8 @@ class ChapterContainer:
                 ),
             )
 
-    def fetch_point_status(self) -> None:
-        """拉取章节任务点状态"""
+    def fetch_point_status(self) -> float:
+        """拉取章节任务点状态 并返回总进度 float"""
         resp = self.session.post(
             API_CHAPTER_POINT,
             data={
@@ -148,6 +148,8 @@ class ChapterContainer:
         )
         resp.raise_for_status()
         json_content = resp.json()
+        point_total=0
+        point_finished=0
         for c in self.chapters:
             point_data = json_content[str(c.chapter_id)]
             if point_data["unfinishcount"] != 0 and point_data["totalcount"] == 0:
@@ -155,7 +157,13 @@ class ChapterContainer:
             else:
                 c.point_total = point_data["totalcount"]
             c.point_finished = point_data["finishcount"]
+
+            point_total+=c.point_total
+            point_finished+=c.point_finished
         self.logger.info("任务点状态已更新")
+        return point_finished/point_total
+
+
 
     def __getitem__(self, key: int) -> list[TaskPointType]:
         return self.fetch_points_by_index(key)
@@ -291,6 +299,9 @@ class ChapterContainer:
             },
         )
         resp.raise_for_status()
+
+
+
 
 
 __all__ = ["ChapterContainer"]
